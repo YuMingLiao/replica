@@ -152,7 +152,9 @@ diffAttrs a b
     diffVValue (ABool m) vn@(ABool n)
       | m == n = []
       | otherwise = [Replace vn]
-    diffVValue (AEvent _) (AEvent _) = []
+    diffVValue (AEvent m _) vn@(AEvent n _)
+      | m == n = []
+      | otherwise = [Replace vn]
     diffVValue (AMap m) (AMap n)
       | null das  = []
       | otherwise = [DiffMap $ diffAttrs m n]

@@ -39,7 +39,7 @@ renderAttrs = foldMap (TB.singleton ' ' <>) . _renderAttrs
       AText txt   -> [TB.fromText name <> eq <> dq <> renderEscapedString txt <> dq]
       ABool True  -> [TB.fromText name]
       ABool False -> []
-      AEvent _    -> []
+      AEvent _ _  -> []
       AMap attrs  -> _renderAttrs attrs
 
 renderEscapedString :: T.Text -> TB.Builder

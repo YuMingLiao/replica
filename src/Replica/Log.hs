@@ -17,6 +17,7 @@ data Log
   = DebugLog T.Text
   | InfoLog  InfoLog
   | ErrorLog  ErrorLog
+  deriving Show
 
 data InfoLog
   = SessionCreated SessionID
@@ -28,12 +29,12 @@ data InfoLog
   | WSClosedByGoingAwayCode SessionID
   | WSConnectionClosed SessionID
   | HTTPPrerender SessionID
-
+  deriving Show
 data ErrorLog
   = WSInvalidWSPath T.Text
   | WSClosedByInternalError SessionID T.Text
   | WSClosedByUnexpectedCode SessionID T.Text
-
+  deriving Show
 
 severity :: Log -> Co.Severity
 severity (InfoLog _)  = Co.Info

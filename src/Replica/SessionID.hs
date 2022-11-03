@@ -12,7 +12,7 @@ import           Text.Hex                       (encodeHex, decodeHex)
 import           Control.Monad                  (guard)
 
 newtype SessionID = SessionID B.ByteString
-  deriving (Eq, Ord)
+  deriving (Eq, Ord, Show)
 
 sessionIdByteLength :: Int
 sessionIdByteLength = 16

@@ -30,7 +30,7 @@ type Path = [Int]
 
 fireWithAttrs :: Attrs -> T.Text -> DOMEvent -> Maybe (IO ())
 fireWithAttrs attrs evtName evtValue = case M.lookup evtName attrs of
-    Just (AEvent attrEvent) -> Just (attrEvent evtValue)
+    Just (AEvent _ attrEvent) -> Just (attrEvent evtValue)
     _ -> Nothing
 
 -- Actually, it doens't fire right away since result is `Myabe (IO ())'.

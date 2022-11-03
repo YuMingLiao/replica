@@ -1,6 +1,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE RankNTypes #-}
 
 module Replica.Application (
     Application (..),
@@ -93,14 +94,14 @@ about the follwing problem.
 TODO: WRITE
 -}
 data Application state = Application
-    { cfgInitial :: Context -> ResourceT IO state
+    { cfgInitial :: {-Context ->-} ResourceT IO state
     , cfgStep :: state -> ResourceT IO (Maybe (V.HTML, state))
     }
 
 -- Request header, Path, Query,
 -- JS FFI
 data Context = Context
-    { jsCall :: forall a. FromJSON a => JSCode -> IO (Either JSError a)
+    { --jsCall :: forall a. FromJSON a => JSCode -> IO (Either JSError a)
     }
 
 -- * Session
@@ -325,7 +326,7 @@ fireLoop getNewFrame getEvent = forever $ do
                         -- Actually fire only if current frame's `step' is still blocking.
                         -- Though for rare case, just right after we tryPutTMVar,
                         -- the `step' blocking could resume before we actually fire event.
-                        -- That menas stepedBy is filled with a event that actually didn't resume `step'
+                        -- That means stepedBy is filled with a event that actually didn't resume `step'
                         stillBlocking <- tryPutTMVar stepedBy (Just ev) -- (2)
                         pure $ if stillBlocking then fire' else pure ()
                 Right _ ->
