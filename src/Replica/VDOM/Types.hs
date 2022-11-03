@@ -12,10 +12,18 @@ t = id
 
 type HTML = [VDOM]
 
+-- | A namespace URI.
+--
+-- For details, see the documentation on the @namespaceURI@ argument
+-- to [createElementNS](https://developer.mozilla.org/en-US/docs/Web/API/Document/createElementNS).
+newtype Namespace = Namespace { getNamespace :: T.Text } deriving (Eq, Ord, Show)
+
+-- | Representation of the Document Object Model in Haskell.
+
 -- TODO: add note about difference about Text and RawText
 data VDOM
-    = VNode !T.Text !Attrs ![VDOM]
-    | VLeaf !T.Text !Attrs
+    = VNode !T.Text !Attrs !(Maybe Namespace) ![VDOM]
+    | VLeaf !T.Text !Attrs !(Maybe Namespace)
     | VText !T.Text
     | VRawText !T.Text
 
@@ -30,17 +38,19 @@ instance A.ToJSON VDOM where
             [ "type" .= t "text"
             , "text" .= text
             ]
-    toJSON (VLeaf element attrs) =
+    toJSON (VLeaf element attrs mNamespace) =
         A.object
             [ "type" .= t "leaf"
             , "element" .= element
             , "attrs" .= attrs
+            , "namespace" .= fmap getNamespace mNamespace
             ]
-    toJSON (VNode element attrs children) =
+    toJSON (VNode element attrs mNamespace children) =
         A.object
             [ "type" .= t "node"
             , "element" .= element
             , "attrs" .= attrs
+            , "namespace" .= fmap getNamespace mNamespace
             , "children" .= children
             ]
 

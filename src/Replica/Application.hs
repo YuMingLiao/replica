@@ -51,7 +51,7 @@ import Control.Monad.Trans.Resource (ResourceT)
 import qualified Control.Monad.Trans.Resource as RI
 import Replica.Types (Event (..), SessionEventError (InvalidEvent))
 import qualified Replica.VDOM as V
-
+import qualified Replica.VDOM.Types as V
 -- * Application
 
 {- | Application
