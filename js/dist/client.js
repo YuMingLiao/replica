@@ -306,9 +306,10 @@ const CLOSE_CODE_ABNORMAL_CLOSURE = 1006;
 const CLOSE_CODE_INTERNAL_ERROR = 1011;
 function connect() {
     let root = document.createElement('div');
+    const wsPath = document.body.dataset[WS_PATH_DATA_ATTR];
     const port = window.location.port ? window.location.port : (window.location.protocol === 'http:' ? 80 : 443);
     const wsProtocol = window.location.protocol === 'http:' ? 'ws:' : 'wss:';
-    const ws = new WebSocket(wsProtocol + "//" + window.location.hostname + ":" + port);
+    const ws = new WebSocket(wsProtocol + "//" + window.location.hostname + ":" + port + wsPath);
     document.body.appendChild(root);
     window['callCallback'] = (cbId, arg, queue) => {
         const msg = {
