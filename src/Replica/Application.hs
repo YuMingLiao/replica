@@ -2,12 +2,13 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE RankNTypes #-}
-
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 module Replica.Application (
     Application (..),
     Session,
     Frame (..),
     TerminatedReason (..),
+    Context (..),
     currentFrame,
     waitTerminate,
     feedEvent,
@@ -52,6 +53,8 @@ import qualified Control.Monad.Trans.Resource as RI
 import Replica.Types (Event (..), SessionEventError (InvalidEvent))
 import qualified Replica.VDOM as V
 import qualified Replica.VDOM.Types as V
+import qualified Data.Aeson                     as A
+import qualified Data.Text as T
 -- * Application
 
 {- | Application
@@ -100,9 +103,17 @@ data Application state = Application
 
 -- Request header, Path, Query,
 -- JS FFI
--- data Context = Context
---     { --jsCall :: forall a. FromJSON a => JSCode -> IO (Either JSError a)
+--data Context = Context
+--    { --jsCall :: forall a. FromJSON a => JSCode -> IO (Either JSError a)
 --    }
+data Context = Context
+  { registerCallback   :: forall a. A.FromJSON a => (a -> IO ()) -> IO Callback
+  , unregisterCallback :: Callback -> IO ()
+  , call               :: forall a. A.ToJSON a => a -> T.Text -> IO ()
+  }
+newtype Callback = Callback Int
+  deriving (Eq, A.ToJSON, A.FromJSON)
+
 
 -- * Session
 
