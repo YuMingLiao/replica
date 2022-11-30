@@ -44,6 +44,7 @@ import qualified Replica.SessionManager as SM
 import Replica.Types (Event (evtClientFrame), SessionAttachingError (SessionAlreadyAttached, SessionDoesntExist), SessionEventError (IllformedData), Update (ReplaceDOM, UpdateDOM))
 import qualified Replica.VDOM as V
 import qualified Replica.VDOM.Render as R
+import Debug.Trace
 
 data Config st = Config
     { cfgTitle :: T.Text
@@ -304,6 +305,7 @@ attachSessionToWebsocket conn ses = withWorker eventLoop frameLoop
     eventLoop = forever $ do
         ev' <- A.decode <$> receiveData conn
         ev <- maybe (throwIO IllformedData) pure ev'
+        traceIO (show ev)
         atomically $ S.feedEvent ses ev
 
 {- | Runs a worker action alongside the provided continuation.

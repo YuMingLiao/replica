@@ -33,7 +33,7 @@ fireWithAttrs attrs evtName evtValue = case M.lookup evtName attrs of
   Just (AEvent _ attrEvent) -> Just (attrEvent evtValue)
   _ -> Nothing
 
--- Actually, it doens't fire right away since result is `Myabe (IO ())'.
+-- Actually, it doens't fire right away since result is `Maybe (IO ())'.
 fireEvent :: HTML -> Path -> T.Text -> DOMEvent -> Maybe (IO ())
 fireEvent _ [] = \_ _ -> Nothing
 fireEvent ds (x : xs) =
