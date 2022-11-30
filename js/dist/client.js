@@ -304,6 +304,8 @@ function buildDOM(ws, dom, index, parent) {
 const CLOSE_CODE_NORMAL_CLOSURE = 1000;
 const CLOSE_CODE_ABNORMAL_CLOSURE = 1006;
 const CLOSE_CODE_INTERNAL_ERROR = 1011;
+// Path to connect. Includes information to attach to proper context.
+const WS_PATH_DATA_ATTR = 'replicaWsPath';
 function connect() {
     let root = document.createElement('div');
     const wsPath = document.body.dataset[WS_PATH_DATA_ATTR];
