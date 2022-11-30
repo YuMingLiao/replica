@@ -94,15 +94,15 @@ about the follwing problem.
 TODO: WRITE
 -}
 data Application state = Application
-    { cfgInitial :: {-Context ->-} ResourceT IO state
+    { cfgInitial :: ResourceT IO state
     , cfgStep :: state -> ResourceT IO (Maybe (V.HTML, state))
     }
 
 -- Request header, Path, Query,
 -- JS FFI
-data Context = Context
-    { --jsCall :: forall a. FromJSON a => JSCode -> IO (Either JSError a)
-    }
+-- data Context = Context
+--     { --jsCall :: forall a. FromJSON a => JSCode -> IO (Either JSError a)
+--    }
 
 -- * Session
 
@@ -197,7 +197,7 @@ Some additional notes:
 Implementation notes:
 
  * リソース獲得及び解放ハンドラは mask された状態で実行される
- * 全体を onException で囲めないのは Nohting の場合は例外が発生していないが
+ * 全体を onException で囲めないのは Nothing の場合は例外が発生していないが
    `releaseRes` を呼び出さないといけないため。
 -}
 firstStep :: Application state -> IO (Maybe (V.HTML, IO Session, IO ()))

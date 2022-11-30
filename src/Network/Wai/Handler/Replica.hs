@@ -16,9 +16,11 @@ import Control.Concurrent.Async (race)
 import Control.Concurrent.STM (STM, atomically, check)
 import Control.Exception (SomeException (SomeException), catch, evaluate, throwIO, try)
 import Control.Monad (forever)
+import           Data.IORef                     (newIORef, atomicModifyIORef', readIORef)
 import qualified Data.Aeson as A
 import qualified Data.ByteString.Lazy as BL
 import Data.Maybe (isJust)
+import qualified Data.Map                       as M
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.Text.Lazy as TL
@@ -31,7 +33,7 @@ import Network.Wai.Handler.WebSockets (websocketsOr)
 import Network.WebSockets (ServerApp, requestPath)
 import qualified Network.WebSockets as WS
 import Network.WebSockets.Connection (Connection, ConnectionOptions, acceptRequest, forkPingThread, pendingRequest, receiveData, receiveDataMessage, rejectRequest, sendClose, sendCloseCode, sendTextData)
-
+import           Debug.Trace                    (traceIO)
 import Control.Monad.Trans.Resource (ResourceT)
 import Replica.Application (Frame (frameNumber, frameVdom), Session)
 import qualified Replica.Application as S
@@ -41,7 +43,7 @@ import Replica.SessionID (SessionID)
 import qualified Replica.SessionID as SID
 import Replica.SessionManager (SessionManage)
 import qualified Replica.SessionManager as SM
-import Replica.Types (Event (evtClientFrame), SessionAttachingError (SessionAlreadyAttached, SessionDoesntExist), SessionEventError (IllformedData), Update (ReplaceDOM, UpdateDOM))
+import Replica.Types (Event (evtClientFrame), SessionAttachingError (SessionAlreadyAttached, SessionDoesntExist), SessionEventError (IllformedData), Update (ReplaceDOM, UpdateDOM), Context(..), Message(..), Callback(..), CallCallback(..))
 import qualified Replica.VDOM as V
 import qualified Replica.VDOM.Render as R
 
@@ -55,8 +57,8 @@ data Config st = Config
       cfgWSInitialConnectLimit :: Ch.Timespan
     , -- | limit for re-connecting span
       cfgWSReconnectionSpanLimit :: Ch.Timespan
-    , cfgInitial :: ResourceT IO st
-    , cfgStep :: st -> ResourceT IO (Maybe (V.HTML, st))
+    , cfgInitial :: Context -> ResourceT IO st
+    , cfgStep :: Context -> st -> ResourceT IO (Maybe (V.HTML, st))
     }
 
 -- | Create replica application.
@@ -99,11 +101,16 @@ decodeFromWsPath wspath = SID.decodeSessionId (T.drop 4 wspath)
 --
 -- 3) Just use "/" as ws path because warp discards HEAD response body
 -- anyway.
-backendApp :: Config st -> SessionManage -> Application
-backendApp Config{..} sm req respond
+backendApp :: Config st -> SessionManage -> Context -> Application
+backendApp Config{..} sm ctx req respond
     | pathIs "/favicon.ico" =
         respond $ responseLBS status404 [] "" -- (1)
     | isProperMethod && (isAcceptable || pathIs "/") = do
+        let app' =
+                S.Application
+                    { S.cfgInitial = cfgInitial ctx
+                    , S.cfgStep = cfgStep ctx
+                    }
         v <- SM.preRender sm app' isHead -- (2)
         case v of
             SM.PRRNothing ->
@@ -119,12 +126,6 @@ backendApp Config{..} sm req respond
     | otherwise =
         respond $ responseLBS status404 [] ""
   where
-    app' =
-        S.Application
-            { S.cfgInitial = cfgInitial
-            , S.cfgStep = cfgStep
-            }
-
     isAcceptable = isJust $ do
         ac <- lookup hAccept (requestHeaders req)
         matchAccept ["text" // "html"] ac
@@ -233,7 +234,7 @@ websocketApp sm pendingConn = do
 
     -- After sending client the close code, we need to recieve
     -- close packet from client. If we don't do this and
-    -- immideatly closed the tcp connection, it'll be an abnormal
+    -- immediately closed the tcp connection, it'll be an abnormal
     -- closure from client pov.
     recieveCloseCode conn = do
         _ <- trySome $ forever $ receiveDataMessage conn
@@ -299,12 +300,20 @@ attachSessionToWebsocket conn ses = withWorker eventLoop frameLoop
             check $ frameNumber f > frameNumber prevFrame
             s <- prevStepedBy -- This should not block if we implement propertly. See `Session`'s documenation.
             pure (v, s)
-
+    -- YuMing: I made Event and CallCallback two types. But keep eventLoop name. Not sure if it's good naming.
     eventLoop :: IO Void
     eventLoop = forever $ do
-        ev' <- A.decode <$> receiveData conn
-        ev <- maybe (throwIO IllformedData) pure ev'
-        atomically $ S.feedEvent ses ev
+        msg' <- A.decode <$> receiveData conn
+        msg <- maybe (throwIO IllformedData) pure msg'
+        case msg of
+          MsgEvent ev -> atomically $ S.feedEvent ses ev
+          MsgCallCallback (CallCallback arg cbId) -> do
+            (_, cbs') <- readIORef cbs
+            case M.lookup cbId cbs' of
+              Just cb -> cb arg
+              Nothing -> pure ()
+
+
 
 {- | Runs a worker action alongside the provided continuation.
  The worker will be automatically torn down when the continuation
