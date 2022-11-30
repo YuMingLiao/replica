@@ -73,33 +73,69 @@ function getElementPath(el) {
     const path = [];
     while (el !== document.body) {
         path.unshift(getElementIndex(el));
-        el = el.parentElement;
+        if (el.parentElement != null) {
+            el = el.parentElement;
+        }
+        else {
+            return null;
+        }
     }
     path.shift();
     return path;
 }
 const listeners = new Map();
-function setEventListener(ws, element, name) {
+const queuedMessages = [];
+let messageWasSent = false;
+function dequeueMessage(ws) {
+    if (queuedMessages.length > 0 && messageWasSent) {
+        console.log('Message is queued, waiting for DOM update to send...');
+    }
+    if (queuedMessages.length > 0 && !messageWasSent) {
+        const f = queuedMessages.shift();
+        const msg = f ? f() : null;
+        if (msg) {
+            messageWasSent = true;
+            ws.send(JSON.stringify(msg));
+        }
+    }
+}
+function setEventListener(ws, element, name, opts) {
     const eventName = name.substring(2).toLowerCase();
     const listener = (event) => {
-        const msg = {
-            eventType: name,
-            event: JSON.parse(stringifyEvent(event)),
-            path: getElementPath(element),
-            clientFrame: serverFrame,
-        };
-        if (eventName === 'input') {
-            addFrame(element, serverFrame, 'value', event.target.value);
+        if (opts.preventDefault) {
+            event.preventDefault();
         }
-        ws.send(JSON.stringify(msg));
+        if (opts.stopPropagation) {
+            event.stopPropagation();
+        }
+        queuedMessages.push(() => {
+            const path = getElementPath(element);
+            if (path) {
+                const msg = {
+                    type: 'event',
+                    eventType: name,
+                    event: JSON.parse(stringifyEvent(event)),
+                    path: getElementPath(element),
+                    clientFrame: serverFrame,
+                };
+                if (eventName === 'input') {
+                    addFrame(element, serverFrame, 'value', event.target.value);
+                }
+                return msg;
+            }
+            else {
+                return null;
+            }
+        });
+        dequeueMessage(ws);
     };
-    element.addEventListener(eventName, listener);
+    element.addEventListener(eventName, listener, opts.capture);
     const elementListeners = listeners.get(element);
     if (elementListeners === undefined) {
-        listeners.set(element, new Map([[name, listener]]));
+        listeners.set(element, new Map([[name, [listener, opts.capture]]]));
     }
     else {
-        elementListeners.set(name, listener);
+        elementListeners.set(name, [listener, opts.capture]);
     }
 }
 function setAttribute(ws, element, onProp, attr, value) {
@@ -108,7 +144,7 @@ function setAttribute(ws, element, onProp, attr, value) {
     }
     else {
         if (attr.startsWith('on')) {
-            setEventListener(ws, element, attr);
+            setEventListener(ws, element, attr, value);
         }
         else if (value !== null) {
             if (attr === 'value') {
@@ -190,7 +226,11 @@ function removeAttribute(element, onProp, attr) {
             const m = listeners.get(element);
             if (m !== undefined) {
                 const eventName = attr.substring(2).toLowerCase();
-                element.removeEventListener(eventName, m.get(attr));
+                const v = m.get(attr);
+                if (v) {
+                    const [listener, capture] = v;
+                    element.removeEventListener(eventName, listener, capture);
+                }
                 m.delete(attr);
                 if (m.size === 0) {
                     listeners.delete(element);
@@ -214,6 +254,7 @@ function patchAttribute(ws, element, onProp, adiff) {
             for (const vdiff of adiff.diff) {
                 switch (vdiff.type) {
                     case 'replace':
+                        removeAttribute(element, onProp, adiff.key);
                         setAttribute(ws, element, onProp, adiff.key, vdiff.value);
                         break;
                     case 'diff':
@@ -232,13 +273,13 @@ function buildDOM(ws, dom, index, parent) {
             element = document.createTextNode(dom.text);
             break;
         case 'leaf':
-            element = document.createElement(dom.element);
+            element = dom.namespace ? document.createElementNS(dom.namespace, dom.element) : document.createElement(dom.element);
             for (const [key, value] of Object.entries(dom.attrs)) {
                 patchAttribute(ws, element, false, { type: 'insert', key, value });
             }
             break;
         case 'node':
-            element = document.createElement(dom.element);
+            element = dom.namespace ? document.createElementNS(dom.namespace, dom.element) : document.createElement(dom.element);
             for (let i = 0; i < dom.children.length; i++) {
                 buildDOM(ws, dom.children[i], null, element);
             }
@@ -263,36 +304,26 @@ function buildDOM(ws, dom, index, parent) {
 const CLOSE_CODE_NORMAL_CLOSURE = 1000;
 const CLOSE_CODE_ABNORMAL_CLOSURE = 1006;
 const CLOSE_CODE_INTERNAL_ERROR = 1011;
-const CLOSE_CODE_SESSION_NOT_FOUND = 4000;
-// Path to connect. Includes information to attach to proper context.
-const WS_PATH_DATA_ATTR = 'replicaWsPath';
-function findRootNode() {
-    const cs = document.body.childNodes;
-    for (let i = 0; i < cs.length; i++) {
-        const c = cs[i];
-        if (c instanceof HTMLElement) {
-            const e = c;
-            if (e.dataset["app"] == "replica") {
-                return e;
-            }
-        }
-    }
-    return null;
-}
 function connect() {
-    // HTML render by SSR has one div and script for body's child.
-    // let root = document.createElement('div');
-    // document.body.appendChild(root);
-    let root_ = findRootNode();
-    if (root_ == null) {
-        alert("Root node not found.");
-        return;
-    }
-    let root = root_;
-    const wsPath = document.body.dataset[WS_PATH_DATA_ATTR];
+    let root = document.createElement('div');
     const port = window.location.port ? window.location.port : (window.location.protocol === 'http:' ? 80 : 443);
-    const ws = new WebSocket("ws://" + window.location.hostname + ":" + port + wsPath);
-    const developMode = new URLSearchParams(window.location.search).get("_mode") == "develop";
+    const wsProtocol = window.location.protocol === 'http:' ? 'ws:' : 'wss:';
+    const ws = new WebSocket(wsProtocol + "//" + window.location.hostname + ":" + port);
+    document.body.appendChild(root);
+    window['callCallback'] = (cbId, arg, queue) => {
+        const msg = {
+            type: 'call',
+            arg,
+            id: cbId
+        };
+        if (queue) {
+            queuedMessages.push(() => msg);
+            dequeueMessage(ws);
+        }
+        else {
+            ws.send(JSON.stringify(msg));
+        }
+    };
     ws.onmessage = (event) => {
         const update = JSON.parse(event.data);
         switch (update.type) {
@@ -300,7 +331,6 @@ function connect() {
                 if (root !== null) {
                     document.body.removeChild(root);
                     root = document.createElement('div');
-                    root.dataset["app"] = "replica";
                     document.body.appendChild(root);
                 }
                 for (const element of update.dom) {
@@ -312,42 +342,33 @@ function connect() {
                     serverFrame = update.serverFrame;
                     clientFrame = update.clientFrame;
                     patch(ws, update.serverFrame, update.diff, root);
+                    messageWasSent = false;
+                    dequeueMessage(ws);
                 }
+                break;
+            case 'call':
+                const f = new Function("arg", update.js);
+                f(update.arg);
                 break;
         }
     };
     ws.onclose = (event) => {
-        console.log(event);
         switch (event.code) {
+            case CLOSE_CODE_ABNORMAL_CLOSURE:
+                // Server-side ended abnormally, reconnect.
+                // console.log("Reconnecting...");
+                // document.body.removeChild(root);
+                // connect();
+                break;
             case CLOSE_CODE_NORMAL_CLOSURE:
                 // Server-side gracefully ended.
                 break;
-            case CLOSE_CODE_SESSION_NOT_FOUND:
-                // When server restarted/ or re-connecting was too slow
-                if (developMode) {
-                    window.location.reload();
-                }
-                else {
-                    alert("Session terminated. Please reload the page");
-                }
-                break;
             case CLOSE_CODE_INTERNAL_ERROR:
                 // Error occured on server-side.
-                alert("Error occured. Please reload the page");
-                break;
-            case CLOSE_CODE_ABNORMAL_CLOSURE:
-                // Conection closed by TCP level. Worth trying re-connecting
-                // Note about access from mobile browser(android). 1~3mins after browser goes background,
-                // websocket connections gets disconnected by OS. When the browser becomes
-                // forground again, onclose is called with code 1006(abnormal closure).
-                console.log("try reconnect");
-                connect();
+                alert("Internal server error, please reload the page: " + event.reason);
                 break;
             default:
-                // Other reasons. Some of them could be worth trying re-connecting.
-                console.log("ws.onClose code: " + event.code);
-            // let tn = document.createTextNode("ws.onClose code: " + event.code);
-            // document.body.appendChild(tn)
+            // Other reasons. Some of them could be worth trying re-connecting.
         }
     };
 }
