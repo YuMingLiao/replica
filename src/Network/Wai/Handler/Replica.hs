@@ -305,7 +305,6 @@ attachSessionToWebsocket conn ses = withWorker eventLoop frameLoop
     eventLoop = forever $ do
         ev' <- A.decode <$> receiveData conn
         ev <- maybe (throwIO IllformedData) pure ev'
-        traceIO (show ev)
         atomically $ S.feedEvent ses ev
 
 {- | Runs a worker action alongside the provided continuation.
