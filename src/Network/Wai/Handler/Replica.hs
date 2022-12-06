@@ -57,7 +57,7 @@ data Config st = Config
     , -- | limit for re-connecting span
       cfgWSReconnectionSpanLimit :: Ch.Timespan
     , cfgInitial :: ResourceT IO st
-    , cfgStep :: st -> ResourceT IO (Maybe (V.HTML, st))
+    , cfgStep :: st -> ResourceT IO (Maybe (V.HTML, st, IO ()))
     }
 
 -- | Create replica application.
@@ -258,7 +258,7 @@ websocketApp sm pendingConn = do
 
    * Assumes this session is not attached to any other connection. (※1)
    * Connection/Protocol-wise exception(e.g. connection closed by client) will not stop the session.
-   * Atleast one frame will always be sent immiedatly. Even in a case where session is already
+   * At least one frame will always be sent immediately. Even in a case where session is already
      over/stopped by exception. In those case, it sends one frame and immiedeatly returns.
    * First frame will be sent as `ReplaceDOM`, following frame will be sent as `UpdateDOM`
    * In some rare case, when stepLoop is looping too fast, few frame might be get skipped,
@@ -305,6 +305,7 @@ attachSessionToWebsocket conn ses = withWorker eventLoop frameLoop
     eventLoop = forever $ do
         ev' <- A.decode <$> receiveData conn
         ev <- maybe (throwIO IllformedData) pure ev'
+        traceIO (show ev)
         atomically $ S.feedEvent ses ev
 
 {- | Runs a worker action alongside the provided continuation.

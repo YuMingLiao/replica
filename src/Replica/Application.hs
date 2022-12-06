@@ -52,6 +52,7 @@ import qualified Control.Monad.Trans.Resource as RI
 import Replica.Types (Event (..), SessionEventError (InvalidEvent))
 import qualified Replica.VDOM as V
 import qualified Replica.VDOM.Types as V
+import Debug.Trace
 -- * Application
 
 {- | Application
@@ -95,7 +96,7 @@ TODO: WRITE
 -}
 data Application state = Application
     { cfgInitial :: {-Context ->-} ResourceT IO state
-    , cfgStep :: state -> ResourceT IO (Maybe (V.HTML, state))
+    , cfgStep :: state -> ResourceT IO (Maybe (V.HTML, state, IO ()))
     }
 
 -- Request header, Path, Query,
@@ -135,7 +136,7 @@ data TerminatedReason
 -- * Session operation
 
 {- | Current frame.
-There is aleays a frame even for terminated sessions.
+There is always a frame even for terminated sessions.
 -}
 currentFrame :: Session -> STM (Frame, STM (Maybe Event))
 currentFrame Session{sesFrame} = do
@@ -211,12 +212,12 @@ firstStep Application{cfgInitial = initial, cfgStep = step} = mask $ \restore ->
             Nothing -> do
                 release
                 pure Nothing
-            Just (_vdom, state) -> do
+            Just (_vdom, state,  unblock) -> do
                 vdom <- evaluate _vdom
                 pure $
                     Just
                         ( vdom
-                        , startSession release step rstate (vdom, state)
+                        , startSession release step rstate (vdom, state, unblock)
                         , release
                         )
   where
@@ -232,13 +233,13 @@ dispatchEvent html Event{..} =
 
 startSession ::
     IO () ->
-    (st -> ResourceT IO (Maybe (V.HTML, st))) ->
+    (st -> ResourceT IO (Maybe (V.HTML, st, IO ()))) ->
     RI.InternalState ->
-    (V.HTML, st) ->
+    (V.HTML, st, IO ()) ->
     IO Session
-startSession release step rstate (vdom, st) = flip onException release $ do
+startSession release step rstate (vdom, st, unblock) = flip onException release $ do
     let frame0 = Frame 0 vdom (const $ Just $ pure ())
-    let frame1 = Frame 1 vdom (dispatchEvent vdom)
+    let frame1 = Frame 1 vdom (fmap (>> unblock) <$> dispatchEvent vdom)
     (fv, qv) <- atomically $ do
         r <- newTMVar Nothing
         f <- newTVar (frame0, r)
@@ -281,19 +282,21 @@ startSession release step rstate (vdom, st) = flip onException release $ do
 -}
 stepLoop ::
     (Frame -> IO (TMVar (Maybe Event))) ->
-    (st -> ResourceT IO (Maybe (V.HTML, st))) ->
+    (st -> ResourceT IO (Maybe (V.HTML, st, IO ()))) ->
     st ->
     Frame ->
     ResourceT IO ()
 stepLoop setNewFrame step st frame = do
-    stepedBy <- liftIO $ setNewFrame frame
-    r <- step st -- This should be the only blocking part
-    _ <- liftIO . atomically $ tryPutTMVar stepedBy Nothing
+    stepedBy <- liftIO $ trace "stepLoop: setNewFrame" $ setNewFrame frame
+
+    r <- trace "stepLoop: step st (stepWidget or Syn's cfgStep)" (step st) -- This should be the only blocking part
+    liftIO $ traceIO "stepLoop: step outside (step st)" 
+    _ <- liftIO . atomically $ trace "stepLoop: unblock" $ tryPutTMVar stepedBy Nothing
     case r of
-        Nothing -> pure ()
-        Just (_newVdom, newSt) -> do
+        Nothing -> trace "stepLoop: step has no newSt" (pure ())
+        Just (_newVdom, newSt, unblock) -> do
             newVdom <- liftIO $ evaluate _newVdom
-            let newFrame = Frame (frameNumber frame + 1) newVdom (dispatchEvent newVdom)
+            let newFrame = Frame (traceShow "stepLoop: step has newSt" (frameNumber frame + 1)) newVdom (fmap (>> unblock) <$> dispatchEvent newVdom)
             stepLoop setNewFrame step newSt newFrame
 
 {- | fireLoop
@@ -307,7 +310,7 @@ fireLoop ::
     STM Event ->
     IO Void
 fireLoop getNewFrame getEvent = forever $ do
-    (frame, stepedBy) <- atomically getNewFrame
+    (frame, stepedBy) <- atomically $ trace "fireLoop: getNewFrame" getNewFrame
     let act = atomically $ do
             r <- Left <$> getEvent <|> Right <$> readTMVar stepedBy -- (1)
             case r of
@@ -328,9 +331,9 @@ fireLoop getNewFrame getEvent = forever $ do
                         -- the `step' blocking could resume before we actually fire event.
                         -- That means stepedBy is filled with a event that actually didn't resume `step'
                         stillBlocking <- tryPutTMVar stepedBy (Just ev) -- (2)
-                        pure $ if stillBlocking then fire' else pure ()
+                        pure $ if stillBlocking then trace "fireLoop: fire'" fire' else trace "fireLoop: not blocking" (pure ())
                 Right _ ->
-                    pure $ pure ()
+                    pure $ trace "fireLoop: readTMVar. Seems unrelated to unblock" (pure ())
     join act
 
 {- | Runs a worker action alongside the provided continuation.
