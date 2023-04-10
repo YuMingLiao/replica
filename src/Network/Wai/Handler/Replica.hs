@@ -15,7 +15,7 @@ import Control.Applicative ((<|>))
 import Control.Concurrent.Async (race)
 import Control.Concurrent.STM (STM, atomically, check)
 import Control.Exception (SomeException (SomeException), catch, evaluate, throwIO, try)
-import Control.Monad (forever)
+import Control.Monad (forever, void)
 import qualified Data.Aeson as A
 import qualified Data.ByteString.Lazy as BL
 import Data.Maybe (isJust)
@@ -33,7 +33,7 @@ import qualified Network.WebSockets as WS
 import Network.WebSockets.Connection (Connection, ConnectionOptions, acceptRequest, forkPingThread, pendingRequest, receiveData, receiveDataMessage, rejectRequest, sendClose, sendCloseCode, sendTextData)
 
 import Control.Monad.Trans.Resource (ResourceT)
-import Replica.Application (Frame (frameNumber, frameVdom), Session)
+import Replica.Application (Frame (frameNumber, frameVdom), Session (..), Context, Callback (..), Call (..))
 import qualified Replica.Application as S
 import Replica.Log (Log, rlog)
 import qualified Replica.Log as L
@@ -41,10 +41,14 @@ import Replica.SessionID (SessionID)
 import qualified Replica.SessionID as SID
 import Replica.SessionManager (SessionManage)
 import qualified Replica.SessionManager as SM
-import Replica.Types (Event (evtClientFrame), SessionAttachingError (SessionAlreadyAttached, SessionDoesntExist), SessionEventError (IllformedData), Update (ReplaceDOM, UpdateDOM))
+import Replica.Types (Event (..), SessionAttachingError (SessionAlreadyAttached, SessionDoesntExist), SessionEventError (IllformedData), Update (ReplaceDOM, UpdateDOM))
 import qualified Replica.VDOM as V
 import qualified Replica.VDOM.Render as R
+import qualified Data.Map as M
+import Data.IORef 
+import Control.Concurrent.MVar
 import Debug.Trace
+import Control.Monad (unless)
 
 data Config st = Config
     { cfgTitle :: T.Text
@@ -57,15 +61,18 @@ data Config st = Config
     , -- | limit for re-connecting span
       cfgWSReconnectionSpanLimit :: Ch.Timespan
     , cfgInitial :: ResourceT IO st
-    , cfgStep :: st -> ResourceT IO (Maybe (V.HTML, st, IO ()))
+    , cfgStep :: Context -> st -> ResourceT IO (Maybe (V.HTML, st, IO ()))
     }
 
 -- | Create replica application.
 app :: Config st -> (Application -> IO a) -> IO a
 app cfg@Config{..} cb = do
     sm <- SM.initialize smcfg
+    cbs <- newIORef (0, M.empty)
+    calls <- newIORef [] 
+    conn <- newEmptyMVar
     let wapp = websocketApp sm
-    let bapp = cfgMiddleware $ backendApp cfg sm
+    let bapp = cfgMiddleware $ backendApp cfg sm cbs conn calls
     withWorker (SM.manageWorker sm) $ cb (websocketsOr cfgWSConnectionOptions wapp bapp)
   where
     smcfg =
@@ -100,8 +107,8 @@ decodeFromWsPath wspath = SID.decodeSessionId (T.drop 4 wspath)
 --
 -- 3) Just use "/" as ws path because warp discards HEAD response body
 -- anyway.
-backendApp :: Config st -> SessionManage -> Application
-backendApp Config{..} sm req respond
+backendApp :: Config st -> SessionManage -> IORef (Int, M.Map Int (A.Value -> IO ())) -> MVar Connection -> IORef [Call] -> Application
+backendApp Config{..} sm cbs conn calls req respond
     | pathIs "/favicon.ico" =
         respond $ responseLBS status404 [] "" -- (1)
     | isProperMethod && (isAcceptable || pathIs "/") = do
@@ -123,8 +130,30 @@ backendApp Config{..} sm req respond
     app' =
         S.Application
             { S.cfgInitial = cfgInitial
-            , S.cfgStep = cfgStep
+            , S.cfgStep = cfgStep ctx
+            , S.cfgConn = conn
+            , S.cfgCalls = calls
+            , S.cfgCallbacks = cbs
             }
+    ctx = S.Context
+        { registerCallback = \cb -> atomicModifyIORef' cbs $ \(cbId, cbs') ->
+            ( ( cbId + 1
+              , flip (M.insert cbId) cbs' $ \arg -> case A.fromJSON arg of
+                  A.Success arg' -> cb arg'
+                  A.Error e -> traceIO $ "callCallback: couldn't decode " <> show arg <> ": " <> show e
+              )
+            , Callback cbId
+            )
+        , unregisterCallback = \(Callback cbId') -> atomicModifyIORef' cbs $ \(cbId, cbs') ->
+            ((cbId, M.delete cbId' cbs'), ())
+        , call = \arg js -> do
+                   mConn <- trace "tryReadMVar" $tryReadMVar conn
+                   case mConn of
+                        Nothing -> atomicModifyIORef' calls $ \calls -> (calls ++ [Call (A.toJSON arg) js], ())
+                        Just conn -> do
+                          trace (show (Call (A.toJSON arg) js))  $ sendTextData conn $ A.encode $ Call (A.toJSON arg) js
+        }
+
 
     isAcceptable = isJust $ do
         ac <- lookup hAccept (requestHeaders req)
@@ -275,7 +304,14 @@ websocketApp sm pendingConn = do
  Or use `chan` to distribute frames.
 -}
 attachSessionToWebsocket :: Connection -> Session -> IO (Maybe SomeException)
-attachSessionToWebsocket conn ses = withWorker eventLoop frameLoop
+attachSessionToWebsocket conn ses = do
+  calls <- readIORef (sesCalls ses)
+  trace (show calls) $ sequence (map (sendTextData conn . A.encode) calls) 
+  
+  isDone <- tryPutMVar (sesConn ses) conn
+  unless isDone (void $ swapMVar (sesConn ses) conn)
+  
+  trace "start withWorker event frame" $ withWorker eventLoop frameLoop
   where
     frameLoop :: IO (Maybe SomeException)
     frameLoop = do
@@ -306,7 +342,15 @@ attachSessionToWebsocket conn ses = withWorker eventLoop frameLoop
         ev' <- A.decode <$> receiveData conn
         ev <- maybe (throwIO IllformedData) pure ev'
         traceIO (show ev)
-        atomically $ S.feedEvent ses ev
+        case ev of
+             Event {} -> atomically $ S.feedEvent ses ev
+             CallCallback arg cbId -> do 
+               (_, cbs') <- readIORef (sesCallbacks ses)
+               case M.lookup cbId cbs' of
+                 Just cb -> cb arg
+                 Nothing -> pure ()
+
+
 
 {- | Runs a worker action alongside the provided continuation.
  The worker will be automatically torn down when the continuation
@@ -319,3 +363,4 @@ withWorker ::
     IO a
 withWorker worker cont =
     either absurd id <$> race worker cont
+

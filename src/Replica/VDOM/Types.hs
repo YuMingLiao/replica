@@ -69,7 +69,7 @@ instance A.ToJSON Attr where
     toJSON (AEvent opts _) = A.toJSON opts
     toJSON (AMap v) = A.toJSON $ fmap A.toJSON v
 
-newtype DOMEvent = DOMEvent {getDOMEvent :: A.Value}
+newtype DOMEvent = DOMEvent {getDOMEvent :: A.Value} deriving Show
 
 data EventOptions = EventOptions
   { evtCapture :: Bool

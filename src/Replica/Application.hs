@@ -2,12 +2,17 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 module Replica.Application (
     Application (..),
-    Session,
+    Session (..),
     Frame (..),
     TerminatedReason (..),
+    Context (..),
+    Callback (..),
+    Call (..),
     currentFrame,
     waitTerminate,
     feedEvent,
@@ -42,7 +47,9 @@ import Control.Concurrent.STM (
 import Control.Exception (SomeException, evaluate, finally, mask, mask_, onException)
 import Control.Monad (forever, join)
 import Data.Bool (bool)
-import Data.IORef (atomicModifyIORef, newIORef)
+import Data.IORef (IORef, atomicModifyIORef, newIORef)
+import Control.Concurrent.MVar (MVar)
+import Network.WebSockets (Connection)
 import Data.Maybe (isJust)
 import Data.Void (Void, absurd)
 
@@ -51,8 +58,11 @@ import Control.Monad.Trans.Resource (ResourceT)
 import qualified Control.Monad.Trans.Resource as RI
 import Replica.Types (Event (..), SessionEventError (InvalidEvent))
 import qualified Replica.VDOM as V
-import qualified Replica.VDOM.Types as V
+import qualified Replica.VDOM.Types as V hiding (t)
+import Data.Aeson (FromJSON, ToJSON (..), Value, object, (.=))
+import Data.Text (Text)
 import Debug.Trace
+import Data.Map
 -- * Application
 
 {- | Application
@@ -62,7 +72,7 @@ import Debug.Trace
    2) dispatched event
  * Event is dispatchable if `Event -> Maybe (IO ())' result is `Just fire'.
  * Event is dispatched only once per frame
- * In rare cases, event might dispatched after the `step' block is already resumed.
+S* In rare cases, event might dispatched after the `step' block is already resumed.
    In such case, dispatching shouldn't affect anything.
 
  * Manage resource(File Handlers, Threads, etc) using ResourceT/MonadResource.
@@ -97,13 +107,33 @@ TODO: WRITE
 data Application state = Application
     { cfgInitial :: {-Context ->-} ResourceT IO state
     , cfgStep :: state -> ResourceT IO (Maybe (V.HTML, state, IO ()))
+    , cfgConn :: MVar Connection 
+    , cfgCalls :: IORef [Call]
+    , cfgCallbacks :: IORef (Int, Map Int (Value -> IO ()))
     }
 
 -- Request header, Path, Query,
 -- JS FFI
 data Context = Context
-    { --jsCall :: forall a. FromJSON a => JSCode -> IO (Either JSError a)
+    --jsCall :: forall a. FromJSON a => JSCode -> IO (Either JSError a)
+    { registerCallback   :: forall a. FromJSON a => (a -> IO ()) -> IO Callback
+    , unregisterCallback :: Callback -> IO ()
+    , call               :: forall a. ToJSON a => a -> Text -> IO ()
     }
+
+newtype Callback = Callback Int
+  deriving (Eq, ToJSON, FromJSON)
+
+data Call = Call Value Text deriving Show
+
+instance ToJSON Call where
+  toJSON (Call arg js) = object
+    [ "type" .= V.t "call"
+    , "arg"  .= arg
+    , "js"   .= js
+    ]
+
+
 
 -- * Session
 
@@ -121,6 +151,9 @@ data Session = Session
     { sesFrame :: TVar (Frame, TMVar (Maybe Event))
     , sesEventQueue :: TQueue Event -- TBqueue might be better
     , sesThread :: Async ()
+    , sesConn :: MVar Connection
+    , sesCalls :: IORef [Call]
+    , sesCallbacks :: IORef (Int, Map Int (Value -> IO ()))
     }
 
 data Frame = Frame
@@ -193,7 +226,7 @@ Some additional notes:
    such case, `Nothing` is returned.
  * If the application throws exception before we reach the fist view update,
    then the exception is simply raised.
- * Don't execute `fistStep' inside a mask.
+ * Don't execute `firstStep' inside a mask.
 
 Implementation notes:
 
@@ -202,22 +235,24 @@ Implementation notes:
    `releaseRes` を呼び出さないといけないため。
 -}
 firstStep :: Application state -> IO (Maybe (V.HTML, IO Session, IO ()))
-firstStep Application{cfgInitial = initial, cfgStep = step} = mask $ \restore -> do
+firstStep Application{cfgInitial = initial, cfgStep = step, cfgConn = conn, cfgCalls = calls, cfgCallbacks = cbs} = mask $ \restore -> do
     doneVar <- newIORef False
     rstate <- RI.createInternalState
     let release = mkRelease doneVar rstate
     flip onException release $ do
+        trace "In firstStep, onException" (pure ())
         r <- restore . flip RI.runInternalState rstate $ step =<< initial
+
         case r of
             Nothing -> do
-                release
+                trace "r = Nothing" release
                 pure Nothing
             Just (_vdom, state,  unblock) -> do
                 vdom <- evaluate _vdom
                 pure $
                     Just
-                        ( vdom
-                        , startSession release step rstate (vdom, state, unblock)
+                        ( trace "vdom evaluated" vdom
+                        , trace "startSession passed" $ startSession conn calls cbs release step rstate (vdom, state, unblock)
                         , release
                         )
   where
@@ -232,12 +267,15 @@ dispatchEvent html Event{..} =
     V.fireEvent html evtPath evtType (V.DOMEvent evtEvent)
 
 startSession ::
+    MVar Connection ->
+    IORef [Call] ->
+    IORef (Int, Map Int (Value -> IO ())) ->
     IO () ->
     (st -> ResourceT IO (Maybe (V.HTML, st, IO ()))) ->
     RI.InternalState ->
     (V.HTML, st, IO ()) ->
     IO Session
-startSession release step rstate (vdom, st, unblock) = flip onException release $ do
+startSession conn calls cbs release step rstate (vdom, st, unblock) = flip onException release $ do
     let frame0 = Frame 0 vdom (const $ Just $ pure ())
     let frame1 = Frame 1 vdom (fmap (>> unblock) <$> dispatchEvent vdom)
     (fv, qv) <- atomically $ do
@@ -250,7 +288,7 @@ startSession release step rstate (vdom, st, unblock) = flip onException release 
             withWorker
                 (fireLoop (getNewFrame fv) (getEvent qv))
                 (stepLoop (setNewFrame fv) step st frame1 `RI.runInternalState` rstate `finally` release)
-    pure $ Session fv qv th
+    pure $ trace "Session passed" $ Session fv qv th conn calls cbs
   where
     setNewFrame var f = atomically $ do
         r <- newEmptyTMVar

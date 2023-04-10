@@ -22,6 +22,7 @@ import qualified Data.Map                   as M
 import           Replica.VDOM.Types         (HTML, VDOM(VNode,VLeaf,VText,VRawText), Attrs, Attr(AText,ABool,AEvent,AMap), DOMEvent, Namespace(Namespace, getNamespace))
 import           Replica.VDOM.Diff          (Diff, AttrDiff, diff, patch, diffAttrs, patchAttrs)
 import           Replica.VDOM.Render        (renderHTML)
+import           Debug.Trace (trace)
 
 t :: T.Text -> T.Text
 t = id
@@ -29,7 +30,7 @@ t = id
 type Path = [Int]
 
 fireWithAttrs :: Attrs -> T.Text -> DOMEvent -> Maybe (IO ())
-fireWithAttrs attrs evtName evtValue = case M.lookup evtName attrs of
+fireWithAttrs attrs evtName evtValue | trace (show evtName ++ show evtValue) True = case M.lookup evtName attrs of
   Just (AEvent _ attrEvent) -> Just (attrEvent evtValue)
   _ -> Nothing
 

@@ -83,6 +83,7 @@ function setEventListener(ws, element, name) {
     const eventName = name.substring(2).toLowerCase();
     const listener = (event) => {
         const msg = {
+            type: 'event',
             eventType: name,
             event: JSON.parse(stringifyEvent(event)),
             path: getElementPath(element),
@@ -293,6 +294,15 @@ function connect() {
     const port = window.location.port ? window.location.port : (window.location.protocol === 'http:' ? 80 : 443);
     const ws = new WebSocket("ws://" + window.location.hostname + ":" + port + wsPath);
     const developMode = new URLSearchParams(window.location.search).get("_mode") == "develop";
+    window['callCallback'] = (cbId, arg) => {
+        const msg = {
+            type: 'call',
+            arg,
+            id: cbId
+        };
+        ws.send(JSON.stringify(msg));
+    };
+
     ws.onmessage = (event) => {
         const update = JSON.parse(event.data);
         switch (update.type) {
@@ -314,6 +324,11 @@ function connect() {
                     patch(ws, update.serverFrame, update.diff, root);
                 }
                 break;
+            case 'call':
+                const f = new Function("arg", update.js);
+                f(update.arg);
+                break;
+ 
         }
     };
     ws.onclose = (event) => {
