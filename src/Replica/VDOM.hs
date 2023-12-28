@@ -30,7 +30,7 @@ t = id
 type Path = [Int]
 
 fireWithAttrs :: Attrs -> T.Text -> DOMEvent -> Maybe (IO ())
-fireWithAttrs attrs evtName evtValue | trace (show evtName ++ show evtValue) True = case M.lookup evtName attrs of
+fireWithAttrs attrs evtName evtValue | trace (show evtName) True = case M.lookup evtName attrs of
   Just (AEvent _ attrEvent) -> Just (attrEvent evtValue)
   _ -> Nothing
 

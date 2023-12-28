@@ -147,11 +147,11 @@ backendApp Config{..} sm cbs conn calls req respond
         , unregisterCallback = \(Callback cbId') -> atomicModifyIORef' cbs $ \(cbId, cbs') ->
             ((cbId, M.delete cbId' cbs'), ())
         , call = \arg js -> do
-                   mConn <- trace "tryReadMVar" $tryReadMVar conn
+                   mConn <- tryReadMVar conn
                    case mConn of
                         Nothing -> atomicModifyIORef' calls $ \calls -> (calls ++ [Call (A.toJSON arg) js], ())
                         Just conn -> do
-                          trace (show (Call (A.toJSON arg) js))  $ sendTextData conn $ A.encode $ Call (A.toJSON arg) js
+                          sendTextData conn $ A.encode $ Call (A.toJSON arg) js
         }
 
 
@@ -306,12 +306,13 @@ websocketApp sm pendingConn = do
 attachSessionToWebsocket :: Connection -> Session -> IO (Maybe SomeException)
 attachSessionToWebsocket conn ses = do
   calls <- readIORef (sesCalls ses)
-  trace (show calls) $ sequence (map (sendTextData conn . A.encode) calls) 
-  
+  sequence (map (sendTextData conn . A.encode) calls) 
+  writeIORef (sesCalls ses) []
+
   isDone <- tryPutMVar (sesConn ses) conn
   unless isDone (void $ swapMVar (sesConn ses) conn)
   
-  trace "start withWorker event frame" $ withWorker eventLoop frameLoop
+  withWorker eventLoop frameLoop
   where
     frameLoop :: IO (Maybe SomeException)
     frameLoop = do
@@ -341,7 +342,6 @@ attachSessionToWebsocket conn ses = do
     eventLoop = forever $ do
         ev' <- A.decode <$> receiveData conn
         ev <- maybe (throwIO IllformedData) pure ev'
-        traceIO (show ev)
         case ev of
              Event {} -> atomically $ S.feedEvent ses ev
              CallCallback arg cbId -> do 

@@ -292,7 +292,7 @@ function connect() {
     let root = root_;
     const wsPath = document.body.dataset[WS_PATH_DATA_ATTR];
     const port = window.location.port ? window.location.port : (window.location.protocol === 'http:' ? 80 : 443);
-    const ws = new WebSocket("ws://" + window.location.hostname + ":" + port + wsPath);
+    const ws = new WebSocket(window.location.protocol === 'http:' ? "ws://" : "wss://" + window.location.hostname + ":" + port + wsPath);
     const developMode = new URLSearchParams(window.location.search).get("_mode") == "develop";
     window['callCallback'] = (cbId, arg) => {
         const msg = {

@@ -240,19 +240,17 @@ firstStep Application{cfgInitial = initial, cfgStep = step, cfgConn = conn, cfgC
     rstate <- RI.createInternalState
     let release = mkRelease doneVar rstate
     flip onException release $ do
-        trace "In firstStep, onException" (pure ())
         r <- restore . flip RI.runInternalState rstate $ step =<< initial
 
         case r of
             Nothing -> do
-                trace "r = Nothing" release
                 pure Nothing
             Just (_vdom, state,  unblock) -> do
                 vdom <- evaluate _vdom
                 pure $
                     Just
-                        ( trace "vdom evaluated" vdom
-                        , trace "startSession passed" $ startSession conn calls cbs release step rstate (vdom, state, unblock)
+                        ( vdom
+                        , startSession conn calls cbs release step rstate (vdom, state, unblock)
                         , release
                         )
   where
@@ -288,7 +286,7 @@ startSession conn calls cbs release step rstate (vdom, st, unblock) = flip onExc
             withWorker
                 (fireLoop (getNewFrame fv) (getEvent qv))
                 (stepLoop (setNewFrame fv) step st frame1 `RI.runInternalState` rstate `finally` release)
-    pure $ trace "Session passed" $ Session fv qv th conn calls cbs
+    pure $ Session fv qv th conn calls cbs
   where
     setNewFrame var f = atomically $ do
         r <- newEmptyTMVar
@@ -325,16 +323,15 @@ stepLoop ::
     Frame ->
     ResourceT IO ()
 stepLoop setNewFrame step st frame = do
-    stepedBy <- liftIO $ trace "stepLoop: setNewFrame" $ setNewFrame frame
+    stepedBy <- liftIO $ setNewFrame frame
 
-    r <- trace "stepLoop: step st (stepWidget or Syn's cfgStep)" (step st) -- This should be the only blocking part
-    liftIO $ traceIO "stepLoop: step outside (step st)" 
-    _ <- liftIO . atomically $ trace "stepLoop: unblock" $ tryPutTMVar stepedBy Nothing
+    r <- step st -- This should be the only blocking part
+    _ <- liftIO . atomically $ tryPutTMVar stepedBy Nothing
     case r of
-        Nothing -> trace "stepLoop: step has no newSt" (pure ())
+        Nothing -> (pure ())
         Just (_newVdom, newSt, unblock) -> do
             newVdom <- liftIO $ evaluate _newVdom
-            let newFrame = Frame (traceShow "stepLoop: step has newSt" (frameNumber frame + 1)) newVdom (fmap (>> unblock) <$> dispatchEvent newVdom)
+            let newFrame = Frame (frameNumber frame + 1) newVdom (fmap (>> unblock) <$> dispatchEvent newVdom)
             stepLoop setNewFrame step newSt newFrame
 
 {- | fireLoop
@@ -348,7 +345,7 @@ fireLoop ::
     STM Event ->
     IO Void
 fireLoop getNewFrame getEvent = forever $ do
-    (frame, stepedBy) <- atomically $ trace "fireLoop: getNewFrame" getNewFrame
+    (frame, stepedBy) <- atomically $ getNewFrame
     let act = atomically $ do
             r <- Left <$> getEvent <|> Right <$> readTMVar stepedBy -- (1)
             case r of
@@ -369,9 +366,9 @@ fireLoop getNewFrame getEvent = forever $ do
                         -- the `step' blocking could resume before we actually fire event.
                         -- That means stepedBy is filled with a event that actually didn't resume `step'
                         stillBlocking <- tryPutTMVar stepedBy (Just ev) -- (2)
-                        pure $ if stillBlocking then trace "fireLoop: fire'" fire' else trace "fireLoop: not blocking" (pure ())
+                        pure $ if stillBlocking then fire' else pure ()
                 Right _ ->
-                    pure $ trace "fireLoop: readTMVar. Seems unrelated to unblock" (pure ())
+                    pure $ pure ()
     join act
 
 {- | Runs a worker action alongside the provided continuation.
