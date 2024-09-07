@@ -82,6 +82,8 @@ const listeners = new Map();
 function setEventListener(ws, element, name) {
     const eventName = name.substring(2).toLowerCase();
     const listener = (event) => {
+        console.log('listener got event.');
+        console.log(event);
         const msg = {
             type: 'event',
             eventType: name,
@@ -89,6 +91,7 @@ function setEventListener(ws, element, name) {
             path: getElementPath(element),
             clientFrame: serverFrame,
         };
+        console.log(msg.event);
         if (eventName === 'input') {
             addFrame(element, serverFrame, 'value', event.target.value);
         }
@@ -292,7 +295,9 @@ function connect() {
     let root = root_;
     const wsPath = document.body.dataset[WS_PATH_DATA_ATTR];
     const port = window.location.port ? window.location.port : (window.location.protocol === 'http:' ? 80 : 443);
-    const ws = new WebSocket(window.location.protocol === 'http:' ? "ws://" : "wss://" + window.location.hostname + ":" + port + wsPath);
+    const ws = new WebSocket("ws://" + window.location.hostname + ":" + port + wsPath);
+
+    // const ws = new WebSocket(window.location.protocol === 'http:' ? "ws://" : "wss://" + window.location.hostname + ":" + port + wsPath);
     const developMode = new URLSearchParams(window.location.search).get("_mode") == "develop";
     window['callCallback'] = (cbId, arg) => {
         const msg = {
